@@ -530,7 +530,7 @@ button:focus-visible {
 }
 
 .actions {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .judge-button {
@@ -872,6 +872,9 @@ button:focus-visible {
             <section class="control-section utility-section" aria-label="抽查操作">
               <span class="control-label">操作</span>
               <div class="actions">
+                <button class="utility-button undo-button" id="undoButton" type="button" disabled>
+                  撤回上一次
+                </button>
                 <button class="utility-button end-round-button" id="endButton" type="button" disabled>
                   结束本轮
                 </button>
@@ -958,6 +961,7 @@ const state = {
   answerVisible: false,
   hintOpen: false,
   hintContent: null,
+  lastJudgment: null,
   sharedStats: {},
   sharedStatsLoaded: false,
 };
@@ -970,6 +974,7 @@ const APP_VERSION = "vocab-test-static-2026-07-09";
 const SMART_RANDOM_MODE = "smart-random";
 const SHARED_SYNC_STORAGE_KEY = "vocabTestSharedSyncSettings";
 const JSONP_TIMEOUT_MS = 8000;
+const SYNC_RECORD_DELAY_MS = 2000;
 
 const elements = {
   dataStatus: document.querySelector("#dataStatus"),
@@ -997,6 +1002,7 @@ const elements = {
   notesBlock: document.querySelector("#notesBlock"),
   notesText: document.querySelector("#notesText"),
   showAnswerButton: document.querySelector("#showAnswerButton"),
+  undoButton: document.querySelector("#undoButton"),
   endButton: document.querySelector("#endButton"),
   correctButton: document.querySelector("#correctButton"),
   fuzzyButton: document.querySelector("#fuzzyButton"),
@@ -1058,6 +1064,7 @@ async function init() {
     }
   });
   elements.showAnswerButton.addEventListener("click", showAnswer);
+  elements.undoButton.addEventListener("click", undoLastJudgment);
   elements.endButton.addEventListener("click", () => endSession(true));
   elements.correctButton.addEventListener("click", () => recordJudgment("correct"));
   elements.fuzzyButton.addEventListener("click", () => recordJudgment("fuzzy"));
@@ -1391,6 +1398,7 @@ async function handleStart(event) {
       fuzzy: [],
       wrong: [],
     };
+    state.lastJudgment = null;
     state.currentItem = null;
     state.answerVisible = false;
     resetHintState();
@@ -1834,18 +1842,79 @@ function recordJudgment(status) {
     return;
   }
   const judgedItem = state.currentItem;
-  removeExistingJudgment(state.currentItem.itemId);
-  state.results[status].push(state.currentItem);
+  const answerWasVisible = state.answerVisible;
+  removeExistingJudgment(judgedItem.itemId);
+  state.results[status].push(judgedItem);
   updateSessionStats();
-  syncRecord(status, judgedItem);
+  const syncTimerId = scheduleSyncRecord(status, judgedItem);
 
   const label = getJudgmentLabel(status);
   if (state.deck.length) {
     showNextItem();
+    state.lastJudgment = {
+      item: judgedItem,
+      status,
+      answerVisible: answerWasVisible,
+      advancedItem: state.currentItem,
+      completedSession: false,
+      syncTimerId,
+    };
+    updateUndoControl();
     setMessage(`已记录为${label}，已进入下一个。`);
   } else {
+    state.lastJudgment = {
+      item: judgedItem,
+      status,
+      answerVisible: answerWasVisible,
+      advancedItem: null,
+      completedSession: true,
+      syncTimerId,
+    };
     endSession(false, `已记录为${label}，本轮抽查已完成，可以生成反馈。`);
   }
+}
+
+function scheduleSyncRecord(result, item) {
+  const settings = getSharedSyncSettings();
+  if (!settings.enabled || !settings.endpoint || !settings.writeKey) {
+    return null;
+  }
+  return window.setTimeout(() => {
+    syncRecord(result, item);
+  }, SYNC_RECORD_DELAY_MS);
+}
+
+function undoLastJudgment() {
+  if (!state.lastJudgment) {
+    return;
+  }
+
+  const lastJudgment = state.lastJudgment;
+  if (lastJudgment.syncTimerId) {
+    window.clearTimeout(lastJudgment.syncTimerId);
+  }
+
+  removeExistingJudgment(lastJudgment.item.itemId);
+  if (lastJudgment.advancedItem) {
+    state.drawn = state.drawn.filter((item) => item.itemId !== lastJudgment.advancedItem.itemId);
+    if (!state.deck.some((item) => item.itemId === lastJudgment.advancedItem.itemId)) {
+      state.deck.unshift(lastJudgment.advancedItem);
+    }
+  }
+
+  if (!state.sessionActive && lastJudgment.completedSession) {
+    state.sessionActive = true;
+    setSetupControlsLocked(true);
+  }
+
+  state.currentItem = lastJudgment.item;
+  state.answerVisible = lastJudgment.answerVisible;
+  state.lastJudgment = null;
+  resetHintState();
+  resetFeedback();
+  renderCurrentItem();
+  updateUndoControl();
+  setMessage(`已撤回上一次${getJudgmentLabel(lastJudgment.status)}记录，可以重新判断。`);
 }
 
 function syncRecord(result, item = state.currentItem) {
@@ -1914,6 +1983,7 @@ function endSession(isManual, customMessage) {
   }
   if (isManual) {
     discardCurrentIfUnmarked();
+    state.lastJudgment = null;
   }
   state.sessionActive = false;
   state.answerVisible = false;
@@ -2233,7 +2303,12 @@ function updateSessionStats() {
   elements.sessionCorrect.textContent = String(state.results.correct.length);
   elements.sessionFuzzy.textContent = String(state.results.fuzzy.length);
   elements.sessionWrong.textContent = String(state.results.wrong.length);
+  updateUndoControl();
   updateFeedbackControls();
+}
+
+function updateUndoControl() {
+  elements.undoButton.disabled = !state.lastJudgment;
 }
 
 function getMarkedCount() {
@@ -2408,17 +2483,47 @@ function getFeedbackNumber(item) {
 
 function getPerformanceComment(testedCount, wrongCount, fuzzyCount) {
   const problemCount = wrongCount + fuzzyCount;
-  const problemRatio = problemCount / testedCount;
+  const problemRatio = testedCount ? problemCount / testedCount : 0;
   if (!problemCount) {
     return "本次抽背全部答对，基本都掌握啦，很棒很棒，继续保持！";
   }
   if (problemCount <= 4 && problemRatio <= 0.35) {
-    return "本次抽背基本上都掌握了，还有个别生词不太熟悉，把错词和模糊词再看一看，继续加油哦！";
+    return `本次抽背基本上都掌握了，还有个别生词不太熟悉，把${getReviewTargetText(wrongCount, fuzzyCount)}再看一看，继续加油哦！`;
   }
   if (problemCount <= 6 && problemRatio <= 0.5) {
-    return "本次抽背相对来说掌握得有些欠佳，错误和模糊的地方还是要再多复习几遍哦，加油加油！";
+    return `本次抽背相对来说掌握得有些欠佳，${getProblemAreaText(wrongCount, fuzzyCount)}还是要再多复习几遍哦，加油加油！`;
   }
-  return "本次抽背错误和模糊的项目比较多，说明这部分内容还需要再好好巩固一下，先多复习几遍再来抽查吧！";
+  return `本次抽背${getProblemItemText(wrongCount, fuzzyCount)}比较多，说明这部分内容还需要再好好巩固一下，先多复习几遍再来抽查吧！`;
+}
+
+function getReviewTargetText(wrongCount, fuzzyCount) {
+  if (wrongCount && fuzzyCount) {
+    return "错词和模糊词";
+  }
+  if (wrongCount) {
+    return "错词";
+  }
+  return "模糊词";
+}
+
+function getProblemAreaText(wrongCount, fuzzyCount) {
+  if (wrongCount && fuzzyCount) {
+    return "错误和模糊的地方";
+  }
+  if (wrongCount) {
+    return "错误的地方";
+  }
+  return "模糊的地方";
+}
+
+function getProblemItemText(wrongCount, fuzzyCount) {
+  if (wrongCount && fuzzyCount) {
+    return "错误和模糊的项目";
+  }
+  if (wrongCount) {
+    return "错误的项目";
+  }
+  return "模糊的项目";
 }
 
 async function copyFeedback() {
