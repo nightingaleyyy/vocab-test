@@ -962,6 +962,7 @@ const state = {
   hintOpen: false,
   hintContent: null,
   lastJudgment: null,
+  pendingSyncRecords: new Map(),
   sharedStats: {},
   sharedStatsLoaded: false,
 };
@@ -974,7 +975,6 @@ const APP_VERSION = "vocab-test-static-2026-07-09";
 const SMART_RANDOM_MODE = "smart-random";
 const SHARED_SYNC_STORAGE_KEY = "vocabTestSharedSyncSettings";
 const JSONP_TIMEOUT_MS = 8000;
-const SYNC_RECORD_DELAY_MS = 2000;
 
 const elements = {
   dataStatus: document.querySelector("#dataStatus"),
@@ -1080,6 +1080,11 @@ async function init() {
   });
   elements.loadSharedStatsButton.addEventListener("click", () => {
     void loadSharedStats({ successMessage: "共享统计已更新。", failureMessage: "共享统计加载失败，已使用普通随机。" });
+  });
+  window.addEventListener("pagehide", () => {
+    if (!state.sessionActive) {
+      flushPendingSyncRecords();
+    }
   });
 }
 
@@ -1357,6 +1362,7 @@ async function handleStart(event) {
     setMessage("请先结束本轮，再开始新的抽查。", true);
     return;
   }
+  flushPendingSyncRecords();
   const project = getProject();
   if (!project) {
     setMessage("没有选中项目。", true);
@@ -1399,6 +1405,7 @@ async function handleStart(event) {
       wrong: [],
     };
     state.lastJudgment = null;
+    state.pendingSyncRecords = new Map();
     state.currentItem = null;
     state.answerVisible = false;
     resetHintState();
@@ -1845,8 +1852,8 @@ function recordJudgment(status) {
   const answerWasVisible = state.answerVisible;
   removeExistingJudgment(judgedItem.itemId);
   state.results[status].push(judgedItem);
+  queuePendingSyncRecord(status, judgedItem);
   updateSessionStats();
-  const syncTimerId = scheduleSyncRecord(status, judgedItem);
 
   const label = getJudgmentLabel(status);
   if (state.deck.length) {
@@ -1857,7 +1864,6 @@ function recordJudgment(status) {
       answerVisible: answerWasVisible,
       advancedItem: state.currentItem,
       completedSession: false,
-      syncTimerId,
     };
     updateUndoControl();
     setMessage(`已记录为${label}，已进入下一个。`);
@@ -1868,20 +1874,49 @@ function recordJudgment(status) {
       answerVisible: answerWasVisible,
       advancedItem: null,
       completedSession: true,
-      syncTimerId,
     };
-    endSession(false, `已记录为${label}，本轮抽查已完成，可以生成反馈。`);
+    endSession(false, `已记录为${label}，本轮抽查已完成，可以撤回上一次，确认无误后生成反馈。`);
   }
 }
 
-function scheduleSyncRecord(result, item) {
+function queuePendingSyncRecord(result, item) {
+  if (!["correct", "fuzzy", "wrong"].includes(result) || !item) {
+    return;
+  }
+  const record = {
+    result,
+    item,
+    project: getActiveProjectId(),
+    wordId: getStableWordId(item),
+    wordIndex: getWordIndex(item),
+    wordText: cleanFeedbackText(item.prompt),
+  };
+  state.pendingSyncRecords.set(record.wordId, record);
+}
+
+function removePendingSyncRecord(item) {
+  if (!item) {
+    return;
+  }
+  state.pendingSyncRecords.delete(getStableWordId(item));
+}
+
+function flushPendingSyncRecords() {
+  if (!state.pendingSyncRecords.size) {
+    return 0;
+  }
+
+  const records = Array.from(state.pendingSyncRecords.values());
+  state.pendingSyncRecords.clear();
   const settings = getSharedSyncSettings();
   if (!settings.enabled || !settings.endpoint || !settings.writeKey) {
-    return null;
+    return 0;
   }
-  return window.setTimeout(() => {
-    syncRecord(result, item);
-  }, SYNC_RECORD_DELAY_MS);
+
+  for (const record of records) {
+    syncRecord(record.result, record.item, settings, record);
+  }
+  return records.length;
 }
 
 function undoLastJudgment() {
@@ -1890,11 +1925,9 @@ function undoLastJudgment() {
   }
 
   const lastJudgment = state.lastJudgment;
-  if (lastJudgment.syncTimerId) {
-    window.clearTimeout(lastJudgment.syncTimerId);
-  }
 
   removeExistingJudgment(lastJudgment.item.itemId);
+  removePendingSyncRecord(lastJudgment.item);
   if (lastJudgment.advancedItem) {
     state.drawn = state.drawn.filter((item) => item.itemId !== lastJudgment.advancedItem.itemId);
     if (!state.deck.some((item) => item.itemId === lastJudgment.advancedItem.itemId)) {
@@ -1917,12 +1950,12 @@ function undoLastJudgment() {
   setMessage(`已撤回上一次${getJudgmentLabel(lastJudgment.status)}记录，可以重新判断。`);
 }
 
-function syncRecord(result, item = state.currentItem) {
+function syncRecord(result, item = state.currentItem, settingsOverride = null, recordSnapshot = null) {
   if (!["correct", "fuzzy", "wrong"].includes(result) || !item) {
     return;
   }
 
-  const settings = getSharedSyncSettings();
+  const settings = settingsOverride || getSharedSyncSettings();
   if (!settings.enabled || !settings.endpoint || !settings.writeKey) {
     return;
   }
@@ -1931,10 +1964,10 @@ function syncRecord(result, item = state.currentItem) {
     action: "record",
     key: settings.writeKey,
     assistantId: settings.assistantId || "anonymous-assistant",
-    project: getActiveProjectId(),
-    wordId: getStableWordId(item),
-    wordIndex: getWordIndex(item),
-    wordText: cleanFeedbackText(item.prompt),
+    project: recordSnapshot ? recordSnapshot.project : getActiveProjectId(),
+    wordId: recordSnapshot ? recordSnapshot.wordId : getStableWordId(item),
+    wordIndex: recordSnapshot ? recordSnapshot.wordIndex : getWordIndex(item),
+    wordText: recordSnapshot ? recordSnapshot.wordText : cleanFeedbackText(item.prompt),
     result,
     date: getFeedbackDateText(),
     timestamp: new Date().toISOString(),
@@ -1985,6 +2018,7 @@ function endSession(isManual, customMessage) {
     discardCurrentIfUnmarked();
     state.lastJudgment = null;
   }
+  const syncedRecordCount = isManual ? flushPendingSyncRecords() : 0;
   state.sessionActive = false;
   state.answerVisible = false;
   resetHintState();
@@ -2014,7 +2048,8 @@ function endSession(isManual, customMessage) {
       setMessage("本轮已结束。没有记录项目，不会生成反馈；可以调整范围后重新开始。");
       return;
     }
-    setMessage(`本轮已结束。实际抽查 ${state.drawn.length} 个，已记录 ${markedCount} 个，可以生成反馈。`);
+    const syncText = syncedRecordCount ? `本轮最终记录已提交同步 ${syncedRecordCount} 条。` : "";
+    setMessage(`本轮已结束。实际抽查 ${state.drawn.length} 个，已记录 ${markedCount} 个，可以生成反馈。${syncText}`);
   } else {
     setMessage("本轮抽查已完成。可以调整范围后重新开始。");
   }
@@ -2338,8 +2373,17 @@ function generateFeedback() {
   }
 
   elements.feedbackText.value = buildFeedbackText();
+  const syncedRecordCount = flushPendingSyncRecords();
+  if (syncedRecordCount) {
+    state.lastJudgment = null;
+    updateUndoControl();
+  }
   updateFeedbackControls();
-  setMessage("反馈已生成，可编辑后复制。");
+  setMessage(
+    syncedRecordCount
+      ? `反馈已生成，本轮最终记录已提交同步 ${syncedRecordCount} 条。`
+      : "反馈已生成，可编辑后复制。",
+  );
 }
 
 function buildFeedbackText() {
