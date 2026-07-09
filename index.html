@@ -237,6 +237,69 @@ button:focus-visible {
   overflow-wrap: break-word;
 }
 
+.sync-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.sync-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.sync-panel h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.sync-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.sync-toggle input {
+  width: auto;
+  min-height: auto;
+}
+
+.sync-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.7fr) minmax(240px, 1.4fr) minmax(140px, 0.7fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.sync-url-field {
+  min-width: 0;
+}
+
+.sync-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sync-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sync-status.is-error {
+  color: var(--danger);
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
@@ -580,6 +643,7 @@ button:focus-visible {
   }
 
   .setup-form,
+  .sync-form,
   .workspace {
     grid-template-columns: 1fr;
   }
@@ -598,8 +662,14 @@ button:focus-visible {
   .test-meta,
   .judgment-actions,
   .actions,
-  .feedback-actions {
+  .feedback-actions,
+  .sync-actions {
     grid-template-columns: 1fr;
+  }
+
+  .sync-panel-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .setup-panel,
@@ -678,6 +748,7 @@ button:focus-visible {
                 <option value="forward-window">从前到后，升序抽查</option>
                 <option value="backward-window">从后到前，降序抽查</option>
                 <option value="full-random">完全随机</option>
+                <option value="smart-random">智能随机，错词优先</option>
               </select>
             </label>
           </div>
@@ -692,6 +763,41 @@ button:focus-visible {
           <button class="primary-button" id="startButton" type="submit">开始抽查</button>
         </form>
         <div class="project-summary" id="projectSummary"></div>
+        <section class="sync-panel" aria-label="共享同步设置">
+          <div class="sync-panel-head">
+            <h2>共享同步设置</h2>
+            <label class="sync-toggle">
+              <input id="sharedSyncEnabled" type="checkbox" />
+              <span>启用共享同步</span>
+            </label>
+          </div>
+          <div class="sync-form">
+            <label class="field">
+              <span>助教昵称</span>
+              <input id="assistantIdInput" type="text" autocomplete="off" />
+            </label>
+            <label class="field sync-url-field">
+              <span>Apps Script Web App URL</span>
+              <input id="syncEndpointInput" type="url" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>write key</span>
+              <input id="syncWriteKeyInput" type="password" autocomplete="off" />
+            </label>
+            <div class="sync-actions">
+              <button class="utility-button" id="saveSyncSettingsButton" type="button">
+                保存设置
+              </button>
+              <button class="utility-button" id="testSyncButton" type="button">
+                测试连接
+              </button>
+              <button class="utility-button" id="loadSharedStatsButton" type="button">
+                拉取共享统计
+              </button>
+            </div>
+          </div>
+          <div class="sync-status" id="sharedSyncStatus">共享同步未启用。</div>
+        </section>
       </section>
 
       <section class="workspace" aria-label="Teacher testing workspace">
@@ -852,12 +958,18 @@ const state = {
   answerVisible: false,
   hintOpen: false,
   hintContent: null,
+  sharedStats: {},
+  sharedStatsLoaded: false,
 };
 
 const LOCAL_SHUFFLE_WINDOW_SIZE = 10;
 const LOCAL_SAMPLE_ALL_LIMIT = 30;
 const LOCAL_SAMPLE_MIN_RATIO = 0.3;
 const LOCAL_SAMPLE_MAX_RATIO = 0.4;
+const APP_VERSION = "vocab-test-static-2026-07-09";
+const SMART_RANDOM_MODE = "smart-random";
+const SHARED_SYNC_STORAGE_KEY = "vocabTestSharedSyncSettings";
+const JSONP_TIMEOUT_MS = 8000;
 
 const elements = {
   dataStatus: document.querySelector("#dataStatus"),
@@ -901,12 +1013,21 @@ const elements = {
   generateFeedbackButton: document.querySelector("#generateFeedbackButton"),
   copyFeedbackButton: document.querySelector("#copyFeedbackButton"),
   feedbackText: document.querySelector("#feedbackText"),
+  sharedSyncEnabled: document.querySelector("#sharedSyncEnabled"),
+  assistantIdInput: document.querySelector("#assistantIdInput"),
+  syncEndpointInput: document.querySelector("#syncEndpointInput"),
+  syncWriteKeyInput: document.querySelector("#syncWriteKeyInput"),
+  saveSyncSettingsButton: document.querySelector("#saveSyncSettingsButton"),
+  testSyncButton: document.querySelector("#testSyncButton"),
+  loadSharedStatsButton: document.querySelector("#loadSharedStatsButton"),
+  sharedSyncStatus: document.querySelector("#sharedSyncStatus"),
 };
 
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   setDefaultFeedbackDate();
+  loadSharedSyncSettings();
 
   try {
     const projects = await loadJson("data/library/projects.json");
@@ -946,6 +1067,13 @@ async function init() {
     void copyFeedback();
   });
   elements.feedbackText.addEventListener("input", updateFeedbackControls);
+  elements.saveSyncSettingsButton.addEventListener("click", saveSharedSyncSettings);
+  elements.testSyncButton.addEventListener("click", () => {
+    void testSharedSyncConnection();
+  });
+  elements.loadSharedStatsButton.addEventListener("click", () => {
+    void loadSharedStats({ successMessage: "共享统计已更新。", failureMessage: "共享统计加载失败，已使用普通随机。" });
+  });
 }
 
 async function loadJson(path) {
@@ -961,6 +1089,189 @@ async function loadJson(path) {
     throw new Error(`${path} ${response.status}`);
   }
   return response.json();
+}
+
+function loadSharedSyncSettings() {
+  const settings = readStoredSharedSyncSettings();
+  elements.sharedSyncEnabled.checked = settings.enabled;
+  elements.assistantIdInput.value = settings.assistantId;
+  elements.syncEndpointInput.value = settings.endpoint;
+  elements.syncWriteKeyInput.value = settings.writeKey;
+  updateSharedSyncStatus(settings.enabled ? "共享同步已启用。" : "共享同步未启用。");
+}
+
+function readStoredSharedSyncSettings() {
+  try {
+    const rawSettings = localStorage.getItem(SHARED_SYNC_STORAGE_KEY);
+    if (!rawSettings) {
+      return getEmptySharedSyncSettings();
+    }
+    const settings = JSON.parse(rawSettings);
+    return {
+      enabled: Boolean(settings.enabled),
+      assistantId: cleanFeedbackText(settings.assistantId),
+      endpoint: cleanFeedbackText(settings.endpoint),
+      writeKey: cleanFeedbackText(settings.writeKey),
+    };
+  } catch (error) {
+    return getEmptySharedSyncSettings();
+  }
+}
+
+function getEmptySharedSyncSettings() {
+  return {
+    enabled: false,
+    assistantId: "",
+    endpoint: "",
+    writeKey: "",
+  };
+}
+
+function getSharedSyncSettings() {
+  return {
+    enabled: Boolean(elements.sharedSyncEnabled.checked),
+    assistantId: cleanFeedbackText(elements.assistantIdInput.value),
+    endpoint: cleanFeedbackText(elements.syncEndpointInput.value),
+    writeKey: cleanFeedbackText(elements.syncWriteKeyInput.value),
+  };
+}
+
+function saveSharedSyncSettings() {
+  const settings = getSharedSyncSettings();
+  try {
+    localStorage.setItem(SHARED_SYNC_STORAGE_KEY, JSON.stringify(settings));
+    updateSharedSyncStatus(settings.enabled ? "共享同步设置已保存。" : "共享同步设置已保存，当前未启用。");
+  } catch (error) {
+    updateSharedSyncStatus("共享同步设置保存失败。", true);
+  }
+}
+
+function updateSharedSyncStatus(message, isError = false) {
+  elements.sharedSyncStatus.textContent = message;
+  elements.sharedSyncStatus.classList.toggle("is-error", isError);
+}
+
+async function loadSharedStats(options = {}) {
+  const settings = getSharedSyncSettings();
+  if (!settings.enabled || !settings.endpoint) {
+    state.sharedStats = {};
+    state.sharedStatsLoaded = false;
+    updateSharedSyncStatus("请先启用共享同步并填写 Apps Script Web App URL。", true);
+    return false;
+  }
+
+  try {
+    const payload = await requestSharedJsonp(settings.endpoint, "stats");
+    if (payload && payload.ok === false) {
+      throw new Error(payload.error || "shared stats returned error");
+    }
+    state.sharedStats = normalizeSharedStats(payload && payload.stats ? payload.stats : payload);
+    state.sharedStatsLoaded = true;
+    const count = Object.keys(state.sharedStats).length;
+    updateSharedSyncStatus(options.successMessage || `共享统计已载入 ${count} 条。`);
+    return true;
+  } catch (error) {
+    state.sharedStats = {};
+    state.sharedStatsLoaded = false;
+    updateSharedSyncStatus(options.failureMessage || "共享统计加载失败，已使用普通随机。", true);
+    return false;
+  }
+}
+
+async function testSharedSyncConnection() {
+  const settings = getSharedSyncSettings();
+  if (!settings.enabled || !settings.endpoint) {
+    updateSharedSyncStatus("请先启用共享同步并填写 Apps Script Web App URL。", true);
+    return false;
+  }
+
+  try {
+    const payload = await requestSharedJsonp(settings.endpoint, "ping");
+    if (!payload || payload.ok !== true) {
+      throw new Error("shared ping failed");
+    }
+    updateSharedSyncStatus("共享连接正常。");
+    return true;
+  } catch (error) {
+    updateSharedSyncStatus("共享连接测试失败。", true);
+    return false;
+  }
+}
+
+function requestSharedJsonp(endpoint, action) {
+  return new Promise((resolve, reject) => {
+    const callbackName = `__vocabSharedStats_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    let script = null;
+    let timeoutId = null;
+
+    const cleanup = () => {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+      if (script && script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
+      try {
+        delete window[callbackName];
+      } catch (error) {
+        window[callbackName] = undefined;
+      }
+    };
+
+    window[callbackName] = (payload) => {
+      cleanup();
+      resolve(payload || {});
+    };
+
+    try {
+      const url = new URL(endpoint);
+      url.searchParams.set("action", action);
+      url.searchParams.set("callback", callbackName);
+      script = document.createElement("script");
+      script.src = url.toString();
+      script.async = true;
+      script.onerror = () => {
+        cleanup();
+        reject(new Error("shared stats request failed"));
+      };
+      timeoutId = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("shared stats request timed out"));
+      }, JSONP_TIMEOUT_MS);
+      document.body.appendChild(script);
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+}
+
+function normalizeSharedStats(stats) {
+  if (!stats || typeof stats !== "object" || Array.isArray(stats)) {
+    return {};
+  }
+
+  const normalized = {};
+  for (const [wordId, entry] of Object.entries(stats)) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    normalized[String(wordId)] = {
+      total: getNonNegativeNumber(entry.total),
+      correct: getNonNegativeNumber(entry.correct),
+      fuzzy: getNonNegativeNumber(entry.fuzzy),
+      wrong: getNonNegativeNumber(entry.wrong),
+    };
+  }
+  return normalized;
+}
+
+function getNonNegativeNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return 0;
+  }
+  return number;
 }
 
 function setDefaultFeedbackDate() {
@@ -1062,6 +1373,16 @@ async function handleStart(event) {
 
     state.activeProject = project;
     state.selectedItems = selected;
+    if (elements.orderMode.value === SMART_RANDOM_MODE) {
+      const settings = getSharedSyncSettings();
+      if (settings.enabled && settings.endpoint) {
+        await loadSharedStats({ failureMessage: "共享统计加载失败，已使用普通随机。" });
+      } else {
+        state.sharedStats = {};
+        state.sharedStatsLoaded = false;
+        updateSharedSyncStatus("共享同步未启用，智能随机将使用普通随机。");
+      }
+    }
     state.deck = buildDeck(selected, elements.orderMode.value);
     state.roundTotal = state.deck.length;
     state.drawn = [];
@@ -1246,7 +1567,7 @@ function buildDeck(items, orderMode) {
   if (orderMode === "backward-window") {
     orderedItems.reverse();
   }
-  return buildSampledLocalDeck(orderedItems);
+  return buildSampledLocalDeck(orderedItems, orderMode === SMART_RANDOM_MODE);
 }
 
 function sortItemsByBookOrder(items) {
@@ -1277,7 +1598,7 @@ function getBookOrderSubIndex(item) {
   return Number.isInteger(item.subIndex) ? item.subIndex : 0;
 }
 
-function buildSampledLocalDeck(items) {
+function buildSampledLocalDeck(items, useSmartWeights = false) {
   const sampleTarget = getLocalSampleTargetCount(items.length);
   if (sampleTarget >= items.length) {
     return [...items];
@@ -1292,11 +1613,10 @@ function buildSampledLocalDeck(items) {
     if (sampleCount >= windowItems.length) {
       deck.push(...windowItems);
     } else if (sampleCount > 0) {
-      const sampledItemIds = new Set(
-        shuffle([...windowItems])
-          .slice(0, sampleCount)
-          .map((item) => item.itemId),
-      );
+      const sampledItems = useSmartWeights
+        ? weightedSampleWithoutReplacement(windowItems, sampleCount)
+        : shuffle([...windowItems]).slice(0, sampleCount);
+      const sampledItemIds = new Set(sampledItems.map((item) => item.itemId));
       deck.push(...windowItems.filter((item) => sampledItemIds.has(item.itemId)));
     }
   }
@@ -1353,6 +1673,7 @@ function getOrderModeLabel() {
     "forward-window": "从前到后升序抽查",
     "backward-window": "从后到前降序抽查",
     "full-random": "完全随机",
+    [SMART_RANDOM_MODE]: "智能随机抽查",
   };
   return labels[elements.orderMode.value] || labels["forward-window"];
 }
@@ -1371,6 +1692,89 @@ function shuffle(items) {
     [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
   }
   return items;
+}
+
+function weightedSampleWithoutReplacement(words, count) {
+  if (count <= 0) {
+    return [];
+  }
+  if (count >= words.length) {
+    return [...words];
+  }
+  if (!hasSharedStats()) {
+    return shuffle([...words]).slice(0, count);
+  }
+
+  const pool = [...words];
+  const selected = [];
+  while (selected.length < count && pool.length) {
+    const weights = pool.map(getSmartWeight);
+    if (weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) {
+      return shuffle([...words]).slice(0, count);
+    }
+
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
+      return shuffle([...words]).slice(0, count);
+    }
+
+    let pick = Math.random() * totalWeight;
+    let selectedIndex = weights.length - 1;
+    for (let index = 0; index < weights.length; index += 1) {
+      pick -= weights[index];
+      if (pick <= 0) {
+        selectedIndex = index;
+        break;
+      }
+    }
+    selected.push(pool.splice(selectedIndex, 1)[0]);
+  }
+  return selected;
+}
+
+function hasSharedStats() {
+  return Boolean(state.sharedStats && Object.keys(state.sharedStats).length);
+}
+
+function getSmartWeight(word) {
+  const stats = state.sharedStats[getStableWordId(word)];
+  if (!stats) {
+    return 1;
+  }
+
+  const countedTotal = stats.correct + stats.fuzzy + stats.wrong;
+  const total = stats.total || countedTotal;
+  if (!Number.isFinite(total) || total < 3) {
+    return 1;
+  }
+
+  const errorScore = (stats.wrong + 0.5 * stats.fuzzy) / total;
+  if (!Number.isFinite(errorScore) || errorScore < 0) {
+    return 1;
+  }
+  return 1 + Math.min(3, 3 * errorScore);
+}
+
+function getStableWordId(item) {
+  return `${getActiveProjectId()}::${getWordIndex(item)}::${cleanFeedbackText(item.prompt)}`;
+}
+
+function getActiveProjectId() {
+  return state.activeProject ? state.activeProject.projectId : elements.projectSelect.value;
+}
+
+function getWordIndex(item) {
+  if (Number.isInteger(item.numericId)) {
+    return String(item.numericId);
+  }
+  if (Number.isInteger(item.sequence)) {
+    return String(item.sequence);
+  }
+  if (cleanFeedbackText(item.rawId)) {
+    const numericPart = cleanFeedbackText(item.rawId).match(/\d+/);
+    return numericPart ? numericPart[0] : "";
+  }
+  return "";
 }
 
 function showNextItem() {
@@ -1429,9 +1833,11 @@ function recordJudgment(status) {
   if (!state.currentItem || !state.sessionActive) {
     return;
   }
+  const judgedItem = state.currentItem;
   removeExistingJudgment(state.currentItem.itemId);
   state.results[status].push(state.currentItem);
   updateSessionStats();
+  syncRecord(status, judgedItem);
 
   const label = getJudgmentLabel(status);
   if (state.deck.length) {
@@ -1439,6 +1845,51 @@ function recordJudgment(status) {
     setMessage(`已记录为${label}，已进入下一个。`);
   } else {
     endSession(false, `已记录为${label}，本轮抽查已完成，可以生成反馈。`);
+  }
+}
+
+function syncRecord(result, item = state.currentItem) {
+  if (!["correct", "fuzzy", "wrong"].includes(result) || !item) {
+    return;
+  }
+
+  const settings = getSharedSyncSettings();
+  if (!settings.enabled || !settings.endpoint || !settings.writeKey) {
+    return;
+  }
+
+  const payload = {
+    action: "record",
+    key: settings.writeKey,
+    assistantId: settings.assistantId || "anonymous-assistant",
+    project: getActiveProjectId(),
+    wordId: getStableWordId(item),
+    wordIndex: getWordIndex(item),
+    wordText: cleanFeedbackText(item.prompt),
+    result,
+    date: getFeedbackDateText(),
+    timestamp: new Date().toISOString(),
+    appVersion: APP_VERSION,
+  };
+  const body = new Blob([JSON.stringify(payload)], { type: "text/plain;charset=utf-8" });
+
+  try {
+    if (navigator.sendBeacon && navigator.sendBeacon(settings.endpoint, body)) {
+      return;
+    }
+  } catch (error) {
+    // Best-effort sync only.
+  }
+
+  try {
+    void fetch(settings.endpoint, {
+      method: "POST",
+      mode: "no-cors",
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  } catch (error) {
+    // Best-effort sync only.
   }
 }
 
