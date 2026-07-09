@@ -675,8 +675,8 @@ button:focus-visible {
             <label class="range-order">
               <span>抽查顺序</span>
               <select id="orderMode" name="orderMode">
-                <option value="forward-window">从前到后，间隔抽查</option>
-                <option value="backward-window">从后到前，间隔抽查</option>
+                <option value="forward-window">从前到后，升序抽查</option>
+                <option value="backward-window">从后到前，降序抽查</option>
                 <option value="full-random">完全随机</option>
               </select>
             </label>
@@ -1277,18 +1277,10 @@ function getBookOrderSubIndex(item) {
   return Number.isInteger(item.subIndex) ? item.subIndex : 0;
 }
 
-function shuffleWithinWindows(items, windowSize) {
-  const deck = [];
-  for (let index = 0; index < items.length; index += windowSize) {
-    deck.push(...shuffle(items.slice(index, index + windowSize)));
-  }
-  return deck;
-}
-
 function buildSampledLocalDeck(items) {
   const sampleTarget = getLocalSampleTargetCount(items.length);
   if (sampleTarget >= items.length) {
-    return shuffleWithinWindows(items, LOCAL_SHUFFLE_WINDOW_SIZE);
+    return [...items];
   }
 
   const deck = [];
@@ -1298,9 +1290,14 @@ function buildSampledLocalDeck(items) {
     const windowItems = windows[index];
     const sampleCount = windowSampleCounts[index];
     if (sampleCount >= windowItems.length) {
-      deck.push(...shuffle([...windowItems]));
+      deck.push(...windowItems);
     } else if (sampleCount > 0) {
-      deck.push(...shuffle([...windowItems]).slice(0, sampleCount));
+      const sampledItemIds = new Set(
+        shuffle([...windowItems])
+          .slice(0, sampleCount)
+          .map((item) => item.itemId),
+      );
+      deck.push(...windowItems.filter((item) => sampledItemIds.has(item.itemId)));
     }
   }
   return deck;
@@ -1353,8 +1350,8 @@ function getRandomInteger(min, max) {
 
 function getOrderModeLabel() {
   const labels = {
-    "forward-window": "从前到后间隔抽查",
-    "backward-window": "从后到前间隔抽查",
+    "forward-window": "从前到后升序抽查",
+    "backward-window": "从后到前降序抽查",
     "full-random": "完全随机",
   };
   return labels[elements.orderMode.value] || labels["forward-window"];
@@ -1363,7 +1360,7 @@ function getOrderModeLabel() {
 function getStartMessage(candidateCount, roundTotal) {
   const orderLabel = getOrderModeLabel();
   if (roundTotal < candidateCount) {
-    return `范围内 ${candidateCount} 条，已按间隔抽样 ${roundTotal} 条，${orderLabel}开始。`;
+    return `范围内 ${candidateCount} 条，已随机抽样 ${roundTotal} 条，${orderLabel}开始。`;
   }
   return `已准备 ${roundTotal} 条，${orderLabel}开始。`;
 }
@@ -1959,17 +1956,18 @@ function getFeedbackNumber(item) {
 }
 
 function getPerformanceComment(testedCount, wrongCount, fuzzyCount) {
-  const problemRatio = (wrongCount + fuzzyCount * 0.5) / testedCount;
-  if (wrongCount <= 3 && problemRatio <= 0.15) {
-    return "本次抽背整体表现不错，错误较少，说明基础掌握比较稳定，可以继续保持这样的复习节奏。";
+  const problemCount = wrongCount + fuzzyCount;
+  const problemRatio = problemCount / testedCount;
+  if (!problemCount) {
+    return "本次抽背全部答对，基本都掌握啦，很棒很棒，继续保持！";
   }
-  if (wrongCount <= 7 && problemRatio <= 0.35) {
-    return "本次抽背有一定掌握基础，但错误和模糊项目说明记忆还不够稳定，需要把这些词再多巩固复习，之后再抽查一轮。";
+  if (problemCount <= 4 && problemRatio <= 0.35) {
+    return "本次抽背基本上都掌握了，还有个别生词不太熟悉，把错词和模糊词再看一看，继续加油哦！";
   }
-  if (problemRatio <= 0.55) {
-    return "本次抽背错误数量偏多，说明本轮内容掌握还不够扎实，建议先把错误和模糊项目系统复习后，再进行下一轮抽查。";
+  if (problemCount <= 6 && problemRatio <= 0.5) {
+    return "本次抽背相对来说掌握得有些欠佳，错误和模糊的地方还是要再多复习几遍哦，加油加油！";
   }
-  return "本次抽背表现偏弱，错误和模糊项目较多，建议先系统复习本轮内容，再进行下一次抽查。";
+  return "本次抽背错误和模糊的项目比较多，说明这部分内容还需要再好好巩固一下，先多复习几遍再来抽查吧！";
 }
 
 async function copyFeedback() {
