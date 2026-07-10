@@ -747,6 +747,7 @@ button:focus-visible {
               <select id="orderMode" name="orderMode">
                 <option value="forward-window">从前到后，升序抽查</option>
                 <option value="backward-window">从后到前，降序抽查</option>
+                <option value="small-random">50个内全随机，超出抽样随机</option>
                 <option value="full-random">完全随机</option>
                 <option value="smart-random">智能随机，错词优先</option>
               </select>
@@ -969,9 +970,11 @@ const state = {
 
 const LOCAL_SHUFFLE_WINDOW_SIZE = 10;
 const LOCAL_SAMPLE_ALL_LIMIT = 30;
+const SMALL_RANDOM_ALL_LIMIT = 50;
 const LOCAL_SAMPLE_MIN_RATIO = 0.3;
 const LOCAL_SAMPLE_MAX_RATIO = 0.4;
 const APP_VERSION = "vocab-test-static-2026-07-09";
+const SMALL_RANDOM_MODE = "small-random";
 const SMART_RANDOM_MODE = "smart-random";
 const SHARED_SYNC_STORAGE_KEY = "vocabTestSharedSyncSettings";
 const JSONP_TIMEOUT_MS = 8000;
@@ -1579,6 +1582,13 @@ function buildDeck(items, orderMode) {
   }
 
   const orderedItems = sortItemsByBookOrder(items);
+  if (orderMode === SMALL_RANDOM_MODE) {
+    if (orderedItems.length <= SMALL_RANDOM_ALL_LIMIT) {
+      return shuffle([...orderedItems]);
+    }
+    return shuffle(buildSampledLocalDeck(orderedItems));
+  }
+
   if (orderMode === "backward-window") {
     orderedItems.reverse();
   }
@@ -1687,6 +1697,7 @@ function getOrderModeLabel() {
   const labels = {
     "forward-window": "从前到后升序抽查",
     "backward-window": "从后到前降序抽查",
+    [SMALL_RANDOM_MODE]: "随机抽查",
     "full-random": "完全随机",
     [SMART_RANDOM_MODE]: "智能随机抽查",
   };
