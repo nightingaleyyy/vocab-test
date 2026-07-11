@@ -1364,6 +1364,7 @@ async function handleStart(event) {
     return;
   }
   flushPendingSyncRecords();
+  commitRangeInputs();
   const project = getProject();
   if (!project) {
     setMessage("没有选中项目。", true);
@@ -1453,27 +1454,59 @@ function renderRangeControls() {
 function handleRangeInput(kind) {
   const input = getRangeInput(kind);
   if (!input.value.trim()) {
+    setDraftRangeValue(kind, null);
+    updateRangeDisplay();
     return;
   }
   const value = Number(input.value);
   if (!Number.isInteger(value)) {
     return;
   }
-  setRangeValue(kind, getNearestRangeValue(value));
+  setDraftRangeValue(kind, value);
+  updateRangeDisplay();
 }
 
 function commitRangeInput(kind) {
   const input = getRangeInput(kind);
-  if (!input.value.trim()) {
+  const value = getCommittedRangeInputValue(input);
+  if (value === null) {
     updateRangeInputs();
+    updateRangeDisplay();
     return;
+  }
+  setRangeValue(kind, value);
+}
+
+function commitRangeInputs() {
+  const startValue = getCommittedRangeInputValue(elements.startNumberInput);
+  const endValue = getCommittedRangeInputValue(elements.endNumberInput);
+  if (startValue !== null) {
+    state.rangeStart = startValue;
+  }
+  if (endValue !== null) {
+    state.rangeEnd = endValue;
+  }
+  updateRangeInputs();
+  updateRangeDisplay();
+}
+
+function getCommittedRangeInputValue(input) {
+  if (!input.value.trim()) {
+    return null;
   }
   const value = Number(input.value);
   if (!Number.isInteger(value)) {
-    updateRangeInputs();
-    return;
+    return null;
   }
-  setRangeValue(kind, getNearestRangeValue(value));
+  return getNearestRangeValue(value);
+}
+
+function setDraftRangeValue(kind, value) {
+  if (kind === "start") {
+    state.rangeStart = value;
+  } else {
+    state.rangeEnd = value;
+  }
 }
 
 function setRangeValue(kind, value) {
@@ -1483,14 +1516,8 @@ function setRangeValue(kind, value) {
   const rangeValue = getNearestRangeValue(value);
   if (kind === "start") {
     state.rangeStart = rangeValue;
-    if (state.rangeEnd === null || state.rangeStart > state.rangeEnd) {
-      state.rangeEnd = state.rangeStart;
-    }
   } else {
     state.rangeEnd = rangeValue;
-    if (state.rangeStart === null || state.rangeEnd < state.rangeStart) {
-      state.rangeStart = state.rangeEnd;
-    }
   }
 
   updateRangeInputs();
