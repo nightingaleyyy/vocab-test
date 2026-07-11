@@ -976,6 +976,12 @@ const SMART_RANDOM_MODE = "smart-random";
 const SMART_RANDOM_SHUFFLE_MODE = "smart-random-shuffle";
 const SHARED_SYNC_STORAGE_KEY = "vocabTestSharedSyncSettings";
 const JSONP_TIMEOUT_MS = 8000;
+const ALWAYS_SAMPLE_PROJECT_IDS = new Set([
+  "sat_logic_words",
+  "sat_reading_quiz",
+  "sat_grammar_quiz",
+  "sat_conjunctions",
+]);
 
 const elements = {
   dataStatus: document.querySelector("#dataStatus"),
@@ -1603,7 +1609,11 @@ function filterItemsByRange(items, start, end) {
 
 function buildDeck(items, orderMode) {
   const orderedItems = sortItemsByBookOrder(items);
-  const sampledDeck = buildSampledLocalDeck(orderedItems, usesSmartSampling(orderMode));
+  const sampledDeck = buildSampledLocalDeck(
+    orderedItems,
+    usesSmartSampling(orderMode),
+    shouldAlwaysSampleActiveProject(),
+  );
   if (orderMode === SMART_RANDOM_SHUFFLE_MODE) {
     return shuffle(sampledDeck);
   }
@@ -1612,6 +1622,10 @@ function buildDeck(items, orderMode) {
 
 function usesSmartSampling(orderMode) {
   return orderMode === SMART_RANDOM_MODE || orderMode === SMART_RANDOM_SHUFFLE_MODE;
+}
+
+function shouldAlwaysSampleActiveProject() {
+  return Boolean(state.activeProject && ALWAYS_SAMPLE_PROJECT_IDS.has(state.activeProject.projectId));
 }
 
 function sortItemsByBookOrder(items) {
@@ -1642,8 +1656,8 @@ function getBookOrderSubIndex(item) {
   return Number.isInteger(item.subIndex) ? item.subIndex : 0;
 }
 
-function buildSampledLocalDeck(items, useSmartWeights = false) {
-  const sampleTarget = getLocalSampleTargetCount(items.length);
+function buildSampledLocalDeck(items, useSmartWeights = false, forcePartialSample = false) {
+  const sampleTarget = getLocalSampleTargetCount(items.length, forcePartialSample);
   if (sampleTarget >= items.length) {
     return [...items];
   }
@@ -1667,8 +1681,8 @@ function buildSampledLocalDeck(items, useSmartWeights = false) {
   return deck;
 }
 
-function getLocalSampleTargetCount(total) {
-  if (total <= LOCAL_SAMPLE_ALL_LIMIT) {
+function getLocalSampleTargetCount(total, forcePartialSample = false) {
+  if (!forcePartialSample && total <= LOCAL_SAMPLE_ALL_LIMIT) {
     return total;
   }
   const minSample = Math.ceil(total * LOCAL_SAMPLE_MIN_RATIO);
