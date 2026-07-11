@@ -745,11 +745,8 @@ button:focus-visible {
             <label class="range-order">
               <span>抽查顺序</span>
               <select id="orderMode" name="orderMode">
-                <option value="forward-window">从前到后，升序抽查</option>
-                <option value="backward-window">从后到前，降序抽查</option>
-                <option value="small-random">50个内全随机，超出抽样随机</option>
-                <option value="full-random">完全随机</option>
-                <option value="smart-random">智能随机，错词优先</option>
+                <option value="smart-random">错词优先，升序展示</option>
+                <option value="smart-random-shuffle">错词优先，随机展示</option>
               </select>
             </label>
           </div>
@@ -969,13 +966,14 @@ const state = {
 };
 
 const LOCAL_SHUFFLE_WINDOW_SIZE = 10;
-const LOCAL_SAMPLE_ALL_LIMIT = 30;
-const SMALL_RANDOM_ALL_LIMIT = 50;
+const LOCAL_SAMPLE_ALL_LIMIT = 50;
 const LOCAL_SAMPLE_MIN_RATIO = 0.3;
 const LOCAL_SAMPLE_MAX_RATIO = 0.4;
+const FEEDBACK_GOOD_PROBLEM_RATIO = 0.1;
+const FEEDBACK_REVIEW_PROBLEM_RATIO = 0.25;
 const APP_VERSION = "vocab-test-static-2026-07-09";
-const SMALL_RANDOM_MODE = "small-random";
 const SMART_RANDOM_MODE = "smart-random";
+const SMART_RANDOM_SHUFFLE_MODE = "smart-random-shuffle";
 const SHARED_SYNC_STORAGE_KEY = "vocabTestSharedSyncSettings";
 const JSONP_TIMEOUT_MS = 8000;
 
@@ -1389,7 +1387,7 @@ async function handleStart(event) {
 
     state.activeProject = project;
     state.selectedItems = selected;
-    if (elements.orderMode.value === SMART_RANDOM_MODE) {
+    if (usesSmartSampling(elements.orderMode.value)) {
       const settings = getSharedSyncSettings();
       if (settings.enabled && settings.endpoint) {
         await loadSharedStats({ failureMessage: "共享统计加载失败，已使用普通随机。" });
@@ -1577,22 +1575,16 @@ function filterItemsByRange(items, start, end) {
 }
 
 function buildDeck(items, orderMode) {
-  if (orderMode === "full-random") {
-    return shuffle([...items]);
-  }
-
   const orderedItems = sortItemsByBookOrder(items);
-  if (orderMode === SMALL_RANDOM_MODE) {
-    if (orderedItems.length <= SMALL_RANDOM_ALL_LIMIT) {
-      return shuffle([...orderedItems]);
-    }
-    return shuffle(buildSampledLocalDeck(orderedItems));
+  const sampledDeck = buildSampledLocalDeck(orderedItems, usesSmartSampling(orderMode));
+  if (orderMode === SMART_RANDOM_SHUFFLE_MODE) {
+    return shuffle(sampledDeck);
   }
+  return sampledDeck;
+}
 
-  if (orderMode === "backward-window") {
-    orderedItems.reverse();
-  }
-  return buildSampledLocalDeck(orderedItems, orderMode === SMART_RANDOM_MODE);
+function usesSmartSampling(orderMode) {
+  return orderMode === SMART_RANDOM_MODE || orderMode === SMART_RANDOM_SHUFFLE_MODE;
 }
 
 function sortItemsByBookOrder(items) {
@@ -1695,13 +1687,10 @@ function getRandomInteger(min, max) {
 
 function getOrderModeLabel() {
   const labels = {
-    "forward-window": "从前到后升序抽查",
-    "backward-window": "从后到前降序抽查",
-    [SMALL_RANDOM_MODE]: "随机抽查",
-    "full-random": "完全随机",
-    [SMART_RANDOM_MODE]: "智能随机抽查",
+    [SMART_RANDOM_MODE]: "错词优先升序展示",
+    [SMART_RANDOM_SHUFFLE_MODE]: "错词优先随机展示",
   };
-  return labels[elements.orderMode.value] || labels["forward-window"];
+  return labels[elements.orderMode.value] || labels[SMART_RANDOM_MODE];
 }
 
 function getStartMessage(candidateCount, roundTotal) {
@@ -2542,10 +2531,10 @@ function getPerformanceComment(testedCount, wrongCount, fuzzyCount) {
   if (!problemCount) {
     return "本次抽背全部答对，基本都掌握啦，很棒很棒，继续保持！";
   }
-  if (problemCount <= 4 && problemRatio <= 0.35) {
+  if (problemRatio <= FEEDBACK_GOOD_PROBLEM_RATIO) {
     return `本次抽背基本上都掌握了，还有个别生词不太熟悉，把${getReviewTargetText(wrongCount, fuzzyCount)}再看一看，继续加油哦！`;
   }
-  if (problemCount <= 6 && problemRatio <= 0.5) {
+  if (problemRatio <= FEEDBACK_REVIEW_PROBLEM_RATIO) {
     return `本次抽背相对来说掌握得有些欠佳，${getProblemAreaText(wrongCount, fuzzyCount)}还是要再多复习几遍哦，加油加油！`;
   }
   return `本次抽背${getProblemItemText(wrongCount, fuzzyCount)}比较多，说明这部分内容还需要再好好巩固一下，先多复习几遍再来抽查吧！`;
