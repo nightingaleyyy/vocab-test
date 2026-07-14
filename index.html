@@ -966,7 +966,7 @@ const state = {
 };
 
 const LOCAL_SHUFFLE_WINDOW_SIZE = 10;
-const LOCAL_SAMPLE_ALL_LIMIT = 50;
+const LOCAL_SAMPLE_ALL_LIMIT = 49;
 const LOCAL_SAMPLE_MIN_RATIO = 0.3;
 const LOCAL_SAMPLE_MAX_RATIO = 0.4;
 const FEEDBACK_GOOD_PROBLEM_RATIO = 0.1;
@@ -2578,7 +2578,7 @@ function getPerformanceComment(testedCount, wrongCount, fuzzyCount) {
   if (problemRatio <= FEEDBACK_REVIEW_PROBLEM_RATIO) {
     return `本次抽背相对来说掌握得有些欠佳，${getProblemAreaText(wrongCount, fuzzyCount)}还是要再多复习几遍哦，加油加油！`;
   }
-  return `本次抽背${getProblemItemText(wrongCount, fuzzyCount)}比较多，说明这部分内容还需要再好好巩固一下，先多复习几遍再来抽查吧！`;
+  return "本次抽背错误和模糊的项目稍微有点多，还需要再好好巩固一下，加油加油！";
 }
 
 function getReviewTargetText(wrongCount, fuzzyCount) {
